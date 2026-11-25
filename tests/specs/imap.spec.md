@@ -126,14 +126,14 @@ No network.
   "* PREAUTH [CAPABILITY IMAP4rev1] hi"
   "* 2 EXISTS" "* 1 RECENT" "* OK [UIDVALIDITY 3857529045] v" "* OK [UIDNEXT 12] n" "a1 OK [READ-WRITE] done"
   "* 2 FETCH (UID 11 FLAGS (\\Recent) INTERNALDATE \"23-Nov-2026 10:00:00 +0000\" RFC822.SIZE 120 ENVELOPE (\"Mon, 23 Nov 2026 10:00:00 +0000\" {10}"
-  "Two (more)  ((\"Ann B\" NIL \"ann\" \"example.org\")) NIL NIL NIL NIL NIL \"<1@x>\" \"<2@x>\"))"
+  "Two (more)  ((\"Ann B\" NIL \"ann\" \"example.org\")) NIL NIL ((NIL NIL \"me\" \"example.org\")) NIL NIL \"<1@x>\" \"<2@x>\"))"
   "* 1 FETCH (UID 9 FLAGS (\\Seen \\Answered $Forwarded $Junk) INTERNALDATE \"22-Nov-2026 09:00:00 +0000\" RFC822.SIZE 99 ENVELOPE (NIL \"One\" ((NIL NIL \"bo\" \"example.org\") (NIL NIL \"cy\" \"example.org\")) NIL NIL NIL NIL NIL NIL NIL))"
   "a2 OK done" ""))))
 (def c (Imap client w))
 (list (Imap messages c (list "INBOX")) (Str8 split "\r\n" (Wire output w)))
 ```
 ---
-    ((("3857529045.9" #f ('passed 'replied 'seen) (('date) ('from . "bo@example.org, cy@example.org") ('subject . "One") ('message-id) ('in-reply-to) ('internal-date . "22-Nov-2026 09:00:00 +0000") ('size . 99))) ("3857529045.11" #t () (('date . "Mon, 23 Nov 2026 10:00:00 +0000") ('from . "Ann B <ann@example.org>") ('subject . "Two (more)") ('message-id . "<2@x>") ('in-reply-to . "<1@x>") ('internal-date . "23-Nov-2026 10:00:00 +0000") ('size . 120)))) ("a1 SELECT \"INBOX\"" "a2 UID FETCH 1:* (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)" ""))
+    ((("3857529045.9" #f ('passed 'replied 'seen) (('date) ('from . "bo@example.org, cy@example.org") ('to) ('cc) ('subject . "One") ('message-id) ('in-reply-to) ('internal-date . "22-Nov-2026 09:00:00 +0000") ('size . 99))) ("3857529045.11" #t () (('date . "Mon, 23 Nov 2026 10:00:00 +0000") ('from . "Ann B <ann@example.org>") ('to . "me@example.org") ('cc) ('subject . "Two (more)") ('message-id . "<2@x>") ('in-reply-to . "<1@x>") ('internal-date . "23-Nov-2026 10:00:00 +0000") ('size . 120)))) ("a1 SELECT \"INBOX\"" "a2 UID FETCH 1:* (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)" ""))
 
 ### IMAP4rev2: NEW? is #f; an empty folder sends no FETCH; a selected one is not selected again
 

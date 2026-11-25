@@ -381,6 +381,8 @@
     (def env (%item items "ENVELOPE"))
     (list (pair (lit date) (%nth env 0))
           (pair (lit from) (%addresses (%nth env 2)))
+          (pair (lit to) (%addresses (%nth env 5)))
+          (pair (lit cc) (%addresses (%nth env 6)))
           (pair (lit subject) (%nth env 1))
           (pair (lit message-id) (%nth env 9))
           (pair (lit in-reply-to) (%nth env 8))
@@ -561,7 +563,7 @@
       (%select! c (%mailbox c folder)))
 
     (method messages (self (param c VECTOR "A logged-in connection") (param folder LIST "A folder"))
-      (doc "The folder's messages as entries (KEY NEW? FLAGS INFO) in UID order. INFO is (date . TEXT) (from . TEXT) (subject . TEXT) (message-id . TEXT) (in-reply-to . TEXT) (internal-date . TEXT) (size . N), from the ENVELOPE as the header carries it (Message decode-words reads an encoded subject or name), each nil where the message has none."
+      (doc "The folder's messages as entries (KEY NEW? FLAGS INFO) in UID order. INFO is (date . TEXT) (from . TEXT) (to . TEXT) (cc . TEXT) (subject . TEXT) (message-id . TEXT) (in-reply-to . TEXT) (internal-date . TEXT) (size . N), from the ENVELOPE as the header carries it (Message decode-words reads an encoded subject or name), each nil where the message has none."
         (returns LIST "Entries")
         (sample "(Imap messages c (list \"INBOX\"))" "((\"1700000000.41\" #f (seen) ((date . \"Mon, 23 Nov 2026 10:00:00 +0000\") (from . \"Ann <ann@example.org>\") ...)))"))
       (%ensure! c folder)
