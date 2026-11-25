@@ -13,8 +13,8 @@
 ; kept on the file whenever it is renamed.
 (module mail/maildir)
 
-(import x/core/doors char->int int& int+ int- int< int<< int= int>> int| str-byte-len str-byte-ref str-byte-sub)
-(import x/codec/utf8 utf8-decode utf8-encode)
+(import x/core/doors char->int int+ int- int< int= str-byte-len str-byte-ref str-byte-sub)
+(import mail/utf7)
 (import x/sys/file)
 (import x/sys/posix)
 
@@ -24,116 +24,11 @@
 
 (def %flag-letters (lit ((draft . 68) (flagged . 70) (passed . 80) (replied . 82) (seen . 83) (trashed . 84))))
 
-; --- Modified UTF-7 ---
+; A folder name as a directory part: modified UTF-7 with "." and "/" in runs
+; too, since "." joins the parts and "/" is a path step.
+(def %encode-name (fn (_ name) (Utf7 encode-with name "./")))
 
-(def %b64 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,")
-
-(def %b64-value
-  (fn (_ c)
-    (match
-      ((if (int< 64 c) (int< c 91) #f) (int- c 65))
-      ((if (int< 96 c) (int< c 123) #f) (int- c 71))
-      ((if (int< 47 c) (int< c 58) #f) (int+ c 4))
-      ((int= c 43) 62)
-      ((int= c 44) 63)
-      (#t -1))))
-
-; A byte written as itself: printable ASCII but "&", "." and "/".
-(def %direct?
-  (fn (_ c)
-    (match
-      ((int< c 32) #f)
-      ((int< 126 c) #f)
-      (#t (not (if (int= c 38) #t (if (int= c 46) #t (int= c 47))))))))
-
-; The code points as UTF-16 bytes, most significant first.
-(def %utf16-bytes
-  (fn (_ cps)
-    (def unit (fn (_ u acc) (pair (int& u 255) (pair (int>> u 8) acc))))
-    (let go ((l cps) (acc ()))
-      (match
-        ((null? l) (List reverse acc))
-        ((int< (first l) 65536) (go (rest l) (unit (first l) acc)))
-        (#t (let ((v (int- (first l) 65536)))
-              (go (rest l) (unit (int| 56320 (int& v 1023)) (unit (int| 55296 (int>> v 10)) acc)))))))))
-
-; The bytes as base64 in the modified alphabet, unpadded.
-(def %b64-encode
-  (fn (_ bytes)
-    (let go ((l bytes) (bits 0) (n 0) (acc ()))
-      (match
-        ((int< 5 n)
-          (let ((k (int- n 6)))
-            (go l (int& bits (int- (int<< 1 k) 1)) k (pair (%byte %b64 (int>> bits k)) acc))))
-        ((null? l)
-          (List reverse (if (int= n 0) acc (pair (%byte %b64 (int<< bits (int- 6 n))) acc))))
-        (#t (go (rest l) (int| (int<< bits 8) (first l)) (int+ n 8) acc))))))
-
-; One folder name as a Maildir++ directory part.
-(def %encode-name
-  (fn (_ name)
-    (def n (str-byte-len name))
-    (def cps-from
-      (fn (_ i acc)
-        (match
-          ((int= i n) (pair (List reverse acc) i))
-          ((%direct? (%byte name i)) (pair (List reverse acc) i))
-          (#t (let ((d (utf8-decode name i))) (cps-from (rest d) (pair (first d) acc)))))))
-    (let go ((i 0) (acc ()))
-      (match
-        ((int= i n) (bytes->str (List reverse acc)))
-        ((int= (%byte name i) 38) (go (int+ i 1) (pair 45 (pair 38 acc))))
-        ((%direct? (%byte name i)) (go (int+ i 1) (pair (%byte name i) acc)))
-        (#t
-          (let ((run (cps-from i ())))
-            (go (rest run)
-                (pair 45 (List append (List reverse (%b64-encode (%utf16-bytes (first run)))) (pair 38 acc))))))))))
-
-; The base64 between "&" and "-" as UTF-8 bytes, or nil when it is not UTF-16.
-(def %decode-run
-  (fn (_ s from to)
-    (def bytes
-      (let go ((i from) (bits 0) (n 0) (acc ()))
-        (match
-          ((int< 7 n)
-            (let ((k (int- n 8)))
-              (go i (int& bits (int- (int<< 1 k) 1)) k (pair (int>> bits k) acc))))
-          ((int= i to) (List reverse acc))
-          (#t (let ((v (%b64-value (%byte s i))))
-                (if (int< v 0) (lit bad) (go (int+ i 1) (int| (int<< bits 6) v) (int+ n 6) acc)))))))
-    (match
-      ((eq? bytes (lit bad)) ())
-      (#t
-        (let go ((l bytes) (acc ()))
-          (match
-            ((null? l) (List reverse acc))
-            ((null? (rest l)) ())
-            (#t
-              (let ((u (int| (int<< (first l) 8) (first (rest l)))) (r (rest (rest l))))
-                (match
-                  ((if (int< u 55296) #t (int< 56319 u)) (go r (List append (List reverse (utf8-encode u)) acc)))
-                  ((if (null? r) #t (null? (rest r))) ())
-                  (#t
-                    (let ((lo (int| (int<< (first r) 8) (first (rest r)))))
-                      (go (rest (rest r))
-                          (List append (List reverse (utf8-encode (int+ 65536 (int| (int<< (int- u 55296) 10) (int- lo 56320))))) acc)))))))))))))
-
-; A directory part back to its folder name; text that is not modified UTF-7 is
-; answered as it is written.
-(def %decode-name
-  (fn (_ s)
-    (def n (str-byte-len s))
-    (let go ((i 0) (acc ()))
-      (match
-        ((int= i n) (bytes->str (List reverse acc)))
-        ((int= (%byte s i) 38)
-          (let ((end (Str8 index-of "-" (str-byte-sub s i (int- n i)))))
-            (match
-              ((null? end) s)
-              ((int= end 1) (go (int+ i 2) (pair 38 acc)))
-              (#t (let ((run (%decode-run s (int+ i 1) (int+ i end))))
-                    (if (null? run) s (go (int+ i (int+ end 1)) (List append (List reverse run) acc))))))))
-        (#t (go (int+ i 1) (pair (%byte s i) acc)))))))
+(def %decode-name (fn (_ s) (Utf7 decode s)))
 
 ; --- Folders ---
 

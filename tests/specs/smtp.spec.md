@@ -10,7 +10,7 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(Str8 split "\r\n" (Smtp script-output (Smtp serve (Smtp script-wire "EHLO client.example\r\nQUIT\r\n") (list (pair 'name "mx.example")))))
+(Str8 split "\r\n" (Wire output (Smtp serve (Wire script "EHLO client.example\r\nQUIT\r\n") (list (pair 'name "mx.example")))))
 ```
 ---
     ("220 mx.example ESMTP" "250-mx.example hello client.example" "250-PIPELINING" "250-SIZE 10485760" "250 8BITMIME" "221 2.0.0 Bye" "")
@@ -20,9 +20,9 @@ and a record of what was written back. No network.
 ```x
 (import mail/smtp)
 (def got (Vector make 1 0))
-(def w (Smtp script-wire "HELO c\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nRCPT TO:<c@z>\r\nDATA\r\nSubject: hi\r\n\r\n..dot\r\nbare lf\n.\r\nQUIT\r\n"))
+(def w (Wire script "HELO c\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nRCPT TO:<c@z>\r\nDATA\r\nSubject: hi\r\n\r\n..dot\r\nbare lf\n.\r\nQUIT\r\n"))
 (Smtp serve w (list (pair 'deliver (fn (_ from to text info) (obj-set! got 1 (list from to text (rest (Assoc find 'hello info))))))))
-(list (obj-ref got 1) (Str8 split "\r\n" (Smtp script-output w)))
+(list (obj-ref got 1) (Str8 split "\r\n" (Wire output w)))
 ```
 ---
     (("a@x" ("b@y" "c@z") "Subject: hi\r\n\r\n.dot\r\nbare lf\r\n" "c") ("220 localhost ESMTP" "250 localhost" "250 2.1.0 OK" "250 2.1.5 OK" "250 2.1.5 OK" "354 End data with <CR><LF>.<CR><LF>" "250 2.0.0 OK" "221 2.0.0 Bye" ""))
@@ -31,8 +31,8 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def w (Smtp script-wire "MAIL FROM:<a@x>\r\nHELO c\r\nRCPT TO:<b@y>\r\nDATA\r\nMAIL FROM:<a@x>\r\nMAIL FROM:<a@x>\r\nDATA\r\nRSET\r\nRCPT TO:<b@y>\r\nQUIT\r\n"))
-(List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (Str8 split "\r\n" (Smtp script-output (Smtp serve w ()))))
+(def w (Wire script "MAIL FROM:<a@x>\r\nHELO c\r\nRCPT TO:<b@y>\r\nDATA\r\nMAIL FROM:<a@x>\r\nMAIL FROM:<a@x>\r\nDATA\r\nRSET\r\nRCPT TO:<b@y>\r\nQUIT\r\n"))
+(List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (Str8 split "\r\n" (Wire output (Smtp serve w ()))))
 ```
 ---
     ("220" "503" "250" "503" "503" "250" "503" "503" "250" "503" "221" "")
@@ -41,8 +41,8 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def w (Smtp script-wire "HELO\r\nHELO c\r\nMAIL a@x\r\nMAIL FROM:<a@x>\r\nRCPT b@y\r\nWHAT\r\nnoop\r\nVRFY b\r\nquit\r\n"))
-(List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (Str8 split "\r\n" (Smtp script-output (Smtp serve w ()))))
+(def w (Wire script "HELO\r\nHELO c\r\nMAIL a@x\r\nMAIL FROM:<a@x>\r\nRCPT b@y\r\nWHAT\r\nnoop\r\nVRFY b\r\nquit\r\n"))
+(List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (Str8 split "\r\n" (Wire output (Smtp serve w ()))))
 ```
 ---
     ("220" "501" "250" "501" "250" "501" "500" "250" "252" "221" "")
@@ -51,9 +51,9 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def w (Smtp script-wire "HELO c\r\nMAIL FROM:<>\r\nRCPT TO:<no@y>\r\nRCPT TO:<yes@y>\r\nDATA\r\nx\r\n.\r\nQUIT\r\n"))
+(def w (Wire script "HELO c\r\nMAIL FROM:<>\r\nRCPT TO:<no@y>\r\nRCPT TO:<yes@y>\r\nDATA\r\nx\r\n.\r\nQUIT\r\n"))
 (Smtp serve w (list (pair 'rcpt (fn (_ a u) (Str8 starts? "yes" a))) (pair 'deliver (fn (_ f t x i) (Err raise 'io "disk full" ())))))
-(List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (Str8 split "\r\n" (Smtp script-output w)))
+(List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (Str8 split "\r\n" (Wire output w)))
 ```
 ---
     ("220" "250" "250" "550" "250" "354" "451" "221" "")
@@ -63,9 +63,9 @@ and a record of what was written back. No network.
 ```x
 (import mail/smtp)
 (def n (Vector make 1 0))
-(def w (Smtp script-wire "EHLO c\r\nMAIL FROM:<a@x> SIZE=500\r\nMAIL FROM:<a@x> SIZE=20\r\nRCPT TO:<b@y>\r\nDATA\r\n0123456789\r\n0123456789\r\n0123456789\r\n.\r\nQUIT\r\n"))
+(def w (Wire script "EHLO c\r\nMAIL FROM:<a@x> SIZE=500\r\nMAIL FROM:<a@x> SIZE=20\r\nRCPT TO:<b@y>\r\nDATA\r\n0123456789\r\n0123456789\r\n0123456789\r\n.\r\nQUIT\r\n"))
 (Smtp serve w (list (pair 'size 30) (pair 'deliver (fn (_ f t x i) (obj-set! n 1 1)))))
-(list (obj-ref n 1) (List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (List drop 5 (Str8 split "\r\n" (Smtp script-output w)))))
+(list (obj-ref n 1) (List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (List drop 5 (Str8 split "\r\n" (Wire output w)))))
 ```
 ---
     (0 ("552" "250" "250" "354" "552" "221" ""))
@@ -75,7 +75,7 @@ and a record of what was written back. No network.
 ```x
 (import mail/smtp)
 (def check (fn (_ u p) #t))
-(def ehlo (fn (_ opts) (Str8 split "\r\n" (Smtp script-output (Smtp serve (Smtp script-wire "EHLO c\r\nAUTH PLAIN AGEAYg==\r\nQUIT\r\n") opts)))))
+(def ehlo (fn (_ opts) (Str8 split "\r\n" (Wire output (Smtp serve (Wire script "EHLO c\r\nAUTH PLAIN AGEAYg==\r\nQUIT\r\n") opts)))))
 (list (ehlo (list (pair 'auth check)))
       (ehlo (list (pair 'auth check) (list 'auth-in-clear))))
 ```
@@ -91,9 +91,9 @@ and a record of what was written back. No network.
                 (pair 'auth (fn (_ u p) (if (Str8 =? u "ann") (Str8 =? p "pw") #f)))
                 (pair 'deliver (fn (_ f t x info) (obj-set! seen 1 (rest (Assoc find 'user info)))))))
 ; AGFubgB3cm9uZw== is NUL ann NUL wrong; YW5u is ann, cHc= is pw
-(def w (Smtp script-wire "EHLO c\r\nMAIL FROM:<a@x>\r\nAUTH PLAIN AGFubgB3cm9uZw==\r\nAUTH LOGIN\r\nYW5u\r\ncHc=\r\nAUTH PLAIN\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nDATA\r\nx\r\n.\r\nQUIT\r\n"))
+(def w (Wire script "EHLO c\r\nMAIL FROM:<a@x>\r\nAUTH PLAIN AGFubgB3cm9uZw==\r\nAUTH LOGIN\r\nYW5u\r\ncHc=\r\nAUTH PLAIN\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nDATA\r\nx\r\n.\r\nQUIT\r\n"))
 (Smtp serve w opts)
-(list (obj-ref seen 1) (List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (List drop 6 (Str8 split "\r\n" (Smtp script-output w)))))
+(list (obj-ref seen 1) (List map (fn (_ l) (if (int< 2 (Str8 length l)) (Str8 sub 0 3 l) l)) (List drop 6 (Str8 split "\r\n" (Wire output w)))))
 ```
 ---
     ("ann" ("530" "535" "334" "334" "235" "503" "250" "250" "354" "250" "221" ""))
@@ -102,7 +102,7 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(List drop 1 (Str8 split "\r\n" (Smtp script-output (Smtp serve (Smtp script-wire "EHLO c\r\nSTARTTLS\r\nQUIT\r\n") ()))))
+(List drop 1 (Str8 split "\r\n" (Wire output (Smtp serve (Wire script "EHLO c\r\nSTARTTLS\r\nQUIT\r\n") ()))))
 ```
 ---
     ("250-localhost hello c" "250-PIPELINING" "250-SIZE 10485760" "250 8BITMIME" "502 5.5.1 STARTTLS not offered" "221 2.0.0 Bye" "")
@@ -111,7 +111,7 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(Smtp script-output (Smtp serve (Smtp script-wire "HELO c\r\n") ()))
+(Wire output (Smtp serve (Wire script "HELO c\r\n") ()))
 ```
 ---
     "220 localhost ESMTP\r\n250 localhost\r\n"
@@ -122,8 +122,8 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def s (Smtp client (Smtp script-wire "220 mx ESMTP\r\n250-mx hello\r\n250-size 1000\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n")))
-(list (Smtp hello s "me") (Smtp extension s "auth") (Smtp extension s "STARTTLS") (Smtp script-output s))
+(def s (Smtp client (Wire script "220 mx ESMTP\r\n250-mx hello\r\n250-size 1000\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n")))
+(list (Smtp hello s "me") (Smtp extension s "auth") (Smtp extension s "STARTTLS") (Wire output (Smtp wire s)))
 ```
 ---
     ((("SIZE" "1000") ("AUTH" "PLAIN" "LOGIN") ("8BITMIME")) ("PLAIN" "LOGIN") () "EHLO me\r\n")
@@ -132,8 +132,8 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def s (Smtp client (Smtp script-wire "220 old\r\n500 what\r\n250 old\r\n")))
-(list (Smtp hello s "me") (Smtp script-output s))
+(def s (Smtp client (Wire script "220 old\r\n500 what\r\n250 old\r\n")))
+(list (Smtp hello s "me") (Wire output (Smtp wire s)))
 ```
 ---
     (() "EHLO me\r\nHELO me\r\n")
@@ -142,7 +142,7 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(guard (e (list (Err label e) (e msg) (e data))) (Smtp client (Smtp script-wire "554 go away\r\n")))
+(guard (e (list (Err label e) (e msg) (e data))) (Smtp client (Wire script "554 go away\r\n")))
 ```
 ---
     ('io "Smtp: the greeting: 554 go away" (554 "go away"))
@@ -151,9 +151,9 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def s (Smtp client (Smtp script-wire "220 mx\r\n250 ok\r\n250 ok\r\n550 no such user\r\n354 go\r\n250 queued\r\n")))
+(def s (Smtp client (Wire script "220 mx\r\n250 ok\r\n250 ok\r\n550 no such user\r\n354 go\r\n250 queued\r\n")))
 (list (Smtp send s "a@x" (list "b@y" "c@z") "Subject: hi\n\n.dot\nend")
-      (Str8 split "\r\n" (Smtp script-output s)))
+      (Str8 split "\r\n" (Wire output (Smtp wire s))))
 ```
 ---
     ((("c@z" 550 "no such user")) ("MAIL FROM:<a@x>" "RCPT TO:<b@y>" "RCPT TO:<c@z>" "DATA" "Subject: hi" "" "..dot" "end" "." ""))
@@ -162,9 +162,9 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def s (Smtp client (Smtp script-wire "220 mx\r\n250 ok\r\n250 ok\r\n354 go\r\n250 queued\r\n")))
+(def s (Smtp client (Wire script "220 mx\r\n250 ok\r\n250 ok\r\n354 go\r\n250 queued\r\n")))
 (Smtp send s "a@x" (list "b@y") (Message make (list (pair "Subject" "hi")) "body\r\n"))
-(List drop 3 (Str8 split "\r\n" (Smtp script-output s)))
+(List drop 3 (Str8 split "\r\n" (Wire output (Smtp wire s))))
 ```
 ---
     ("Subject: hi" "" "body" "." "")
@@ -173,9 +173,9 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def s (Smtp client (Smtp script-wire "220 mx\r\n250 ok\r\n550 no\r\n250 reset\r\n")))
+(def s (Smtp client (Wire script "220 mx\r\n250 ok\r\n550 no\r\n250 reset\r\n")))
 (list (guard (e (e msg)) (Smtp send s "a@x" (list "b@y") "x"))
-      (Str8 split "\r\n" (Smtp script-output s)))
+      (Str8 split "\r\n" (Wire output (Smtp wire s))))
 ```
 ---
     ("Smtp: the server took no recipient" ("MAIL FROM:<a@x>" "RCPT TO:<b@y>" "RSET" ""))
@@ -184,7 +184,7 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(Smtp command (Smtp client (Smtp script-wire "220 mx\r\n214-one\r\n214-two\r\n214 three\r\n")) "HELP")
+(Smtp command (Smtp client (Wire script "220 mx\r\n214-one\r\n214-two\r\n214 three\r\n")) "HELP")
 ```
 ---
     (214 "one" "two" "three")
@@ -193,10 +193,10 @@ and a record of what was written back. No network.
 
 ```x
 (import mail/smtp)
-(def s (Smtp client (Smtp script-wire "220 mx\r\n250-mx\r\n250 AUTH LOGIN\r\n334 VXNlcm5hbWU6\r\n334 UGFzc3dvcmQ6\r\n235 ok\r\n")))
+(def s (Smtp client (Wire script "220 mx\r\n250-mx\r\n250 AUTH LOGIN\r\n334 VXNlcm5hbWU6\r\n334 UGFzc3dvcmQ6\r\n235 ok\r\n")))
 (Smtp hello s "me")
-(def t (Smtp client (Smtp script-wire "220 mx\r\n535 bad\r\n")))
-(list (Smtp auth s "ann" "pw") (List drop 1 (Str8 split "\r\n" (Smtp script-output s)))
+(def t (Smtp client (Wire script "220 mx\r\n535 bad\r\n")))
+(list (Smtp auth s "ann" "pw") (List drop 1 (Str8 split "\r\n" (Wire output (Smtp wire s))))
       (guard (e (e msg)) (Smtp auth t "ann" "wrong")))
 ```
 ---
@@ -207,13 +207,13 @@ and a record of what was written back. No network.
 ```x
 (import mail/smtp)
 (def got (Vector make 1 0))
-(def server (Smtp serve (Smtp script-wire "EHLO me\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nDATA\r\nSubject: s\r\n\r\n..x\r\n.\r\nQUIT\r\n")
+(def server (Smtp serve (Wire script "EHLO me\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nDATA\r\nSubject: s\r\n\r\n..x\r\n.\r\nQUIT\r\n")
                         (list (pair 'deliver (fn (_ f t x i) (obj-set! got 1 x))))))
-(def c (Smtp client (Smtp script-wire (Smtp script-output server))))
+(def c (Smtp client (Wire script (Wire output server))))
 (Smtp hello c "me")
 (Smtp send c "a@x" (list "b@y") "Subject: s\n\n.x\n")
 (Smtp quit c)
-(list (obj-ref got 1) (Str8 =? (Smtp script-output c) "EHLO me\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nDATA\r\nSubject: s\r\n\r\n..x\r\n.\r\nQUIT\r\n"))
+(list (obj-ref got 1) (Str8 =? (Wire output (Smtp wire c)) "EHLO me\r\nMAIL FROM:<a@x>\r\nRCPT TO:<b@y>\r\nDATA\r\nSubject: s\r\n\r\n..x\r\n.\r\nQUIT\r\n"))
 ```
 ---
     ("Subject: s\r\n\r\n.x\r\n" #t)

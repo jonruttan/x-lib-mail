@@ -1,11 +1,8 @@
 ; smtp.x -- Smtp: the Simple Mail Transfer Protocol (RFC 5321), client and server.
 ;
-; Both sides talk over a wire: a connection read and written a line at a
-; time.  A wire is a socket, a TLS session over a socket, or a script (text
-; to read and a record of what was written), which runs either side with no
-; network.  STARTTLS (RFC 3207) turns a socket's wire into a TLS one in
-; place; whatever was read ahead before it is dropped, so nothing sent in
-; the clear is taken as sent under TLS.
+; Both sides talk over a mail/wire wire: a socket, TLS on a socket, or a
+; script that runs either side with no network.  STARTTLS (RFC 3207) turns a
+; socket's wire into a TLS one in place.
 ;
 ; The client says EHLO (HELO where EHLO is refused), may take STARTTLS and
 ; AUTH (PLAIN or LOGIN, RFC 4954), and sends a message: MAIL, a RCPT a
@@ -26,6 +23,7 @@
 (import x/codec/base64)
 (import x/codec/bytes)
 (import mail/message)
+(import mail/wire)
 
 (def %io (fn (_ what data) (Err raise (lit io) (Str8 append "Smtp: " what) data)))
 
@@ -34,63 +32,6 @@
 (def %opt (fn (_ key opts) (let ((p (Assoc find key opts))) (if (null? p) () (rest p)))))
 
 (def %flag? (fn (_ key opts) (List any? (fn (_ o) (if (pair? o) (eq? (first o) key) #f)) opts)))
-
-; --- wires
-;
-; A wire is a vector: 1 read, (fn (_ n)) a run (STRING . COUNT) or nil at the
-; end; 2 write, (fn (_ s)); 3 close; 4 the bytes read ahead, a region; 5 the
-; socket, or nil for a script; 6 #t once under TLS; 7 a script's writes,
-; newest first.
-
-(def %wire
-  (fn (_ read write close fd)
-    (def w (Vector make 7 0))
-    (obj-set! w 1 read)
-    (obj-set! w 2 write)
-    (obj-set! w 3 close)
-    (obj-set! w 4 (list "" 0 0))
-    (obj-set! w 5 fd)
-    (obj-set! w 6 #f)
-    (obj-set! w 7 ())
-    w))
-
-(def %max-line 65536)
-
-; The next line without its line end, or nil at the wire's end.  A line ends
-; at LF, a CR before it dropped.
-(def %read-line
-  (fn (self w)
-    (def buf (obj-ref w 4))
-    (def at (Bytes find buf "\n"))
-    (if (null? at)
-      (do (when (int< %max-line (Bytes length buf)) (%io "a line longer than the limit" (Bytes length buf)))
-          (let ((run ((obj-ref w 1) 4096)))
-            (if (if (null? run) #t (int= (rest run) 0))
-              (if (int= (Bytes length buf) 0) ()
-                (do (obj-set! w 4 (list "" 0 0)) (str-byte-sub (first buf) (first (rest buf)) (Bytes length buf))))
-              (do (obj-set! w 4 (Bytes join buf (list (first run) 0 (rest run)))) (self w)))))
-      (do (def end (if (int< 0 at) (if (int= (Bytes ref buf (int- at 1)) 13) (int- at 1) at) at))
-          (obj-set! w 4 (Bytes sub buf (int+ at 1) (int- (Bytes length buf) (int+ at 1))))
-          (str-byte-sub (first buf) (first (rest buf)) end)))))
-
-(def %write (fn (_ w s) ((obj-ref w 2) s)))
-
-(def %write-line (fn (_ w s) ((obj-ref w 2) (Str8 append s "\r\n"))))
-
-; The wire under TLS: the session made by START from its socket, the bytes
-; read ahead dropped.
-(def %upgrade!
-  (fn (_ w start)
-    (def fd (obj-ref w 5))
-    (when (null? fd) (%io "STARTTLS needs a socket" ()))
-    (import x/net/tls13)
-    (def s (start fd))
-    (obj-set! w 1 (fn (_ n) (Tls13 recv-run s n)))
-    (obj-set! w 2 (fn (_ str) (Tls13 send s str)))
-    (obj-set! w 3 (fn (_) (do (Tls13 close s) (Socket close fd))))
-    (obj-set! w 4 (list "" 0 0))
-    (obj-set! w 6 #t)
-    w))
 
 ; --- replies
 
@@ -108,7 +49,7 @@
 (def %reply
   (fn (_ w)
     (let go ((acc ()))
-      (let ((line (%read-line w)))
+      (let ((line (Wire read-line w)))
         (when (null? line) (%io "the connection closed before a reply" ()))
         (when (int< (str-byte-len line) 3) (%io "a reply line too short" line))
         (def code (%code line))
@@ -148,7 +89,7 @@
 ; s's command line, and the reply
 (def %ask
   (fn (_ s line)
-    (%write-line (obj-ref s 1) line)
+    (Wire write-line (obj-ref s 1) line)
     (%reply (obj-ref s 1))))
 
 ; A message's text with CRLF line ends, ready for DATA: a line that starts
@@ -211,7 +152,7 @@
   (fn (_ w limit)
     (def b (Bytes writer))
     (let go ((over #f))
-      (let ((line (%read-line w)))
+      (let ((line (Wire read-line w)))
         (match
           ((null? line) (%io "the connection closed in DATA" ()))
           ((Str8 =? line ".")
@@ -255,20 +196,20 @@
     (obj-set! st 7 #f)
     st))
 
-(def %say (fn (_ st code text) (%write-line (obj-ref st 1) (Str8 append (Str8 str code) " " text))))
+(def %say (fn (_ st code text) (Wire write-line (obj-ref st 1) (Str8 append (Str8 str code) " " text))))
 
 (def %reset! (fn (_ st) (do (obj-set! st 4 ()) (obj-set! st 5 ()))))
 
 (def %max-size (fn (_ opts) (let ((n (%opt (lit size) opts))) (if (null? n) 10485760 n))))
 
-(def %tls-offered? (fn (_ st) (if (null? (%opt (lit pem) (obj-ref st 2))) #f (not (obj-ref (obj-ref st 1) 6)))))
+(def %tls-offered? (fn (_ st) (if (null? (%opt (lit pem) (obj-ref st 2))) #f (not (Wire tls? (obj-ref st 1))))))
 
 (def %auth-offered?
   (fn (_ st)
     (def opts (obj-ref st 2))
     (if (null? (%opt (lit auth) opts)) #f
       (if (null? (obj-ref st 6))
-        (if (obj-ref (obj-ref st 1) 6) #t (%flag? (lit auth-in-clear) opts))
+        (if (Wire tls? (obj-ref st 1)) #t (%flag? (lit auth-in-clear) opts))
         #f))))
 
 (def %ehlo
@@ -285,7 +226,7 @@
     (let go ((l lines))
       (if (null? (rest l))
         (%say st 250 (first l))
-        (do (%write-line (obj-ref st 1) (Str8 append "250-" (first l))) (go (rest l)))))))
+        (do (Wire write-line (obj-ref st 1) (Str8 append "250-" (first l))) (go (rest l)))))))
 
 (def %authenticate
   (fn (_ st arg)
@@ -293,7 +234,7 @@
     (def w (obj-ref st 1))
     (def words (List filter (fn (_ x) (int< 0 (str-byte-len x))) (Str8 split " " arg)))
     (def mech (if (null? words) "" (Str8 upcase (first words))))
-    (def ask (fn (_ prompt) (do (%say st 334 prompt) (%read-line w))))
+    (def ask (fn (_ prompt) (do (%say st 334 prompt) (Wire read-line w))))
     (def creds
       (match
         ((Str8 =? mech "PLAIN")
@@ -342,7 +283,7 @@
 
 (def %info
   (fn (_ st)
-    (list (pair (lit hello) (obj-ref st 3)) (pair (lit tls) (obj-ref (obj-ref st 1) 6)) (pair (lit user) (obj-ref st 6)))))
+    (list (pair (lit hello) (obj-ref st 3)) (pair (lit tls) (Wire tls? (obj-ref st 1))) (pair (lit user) (obj-ref st 6)))))
 
 (def %data
   (fn (_ st)
@@ -366,8 +307,7 @@
   (fn (_ st)
     (if (%tls-offered? st)
       (do (%say st 220 "2.0.0 Ready to start TLS")
-          (%upgrade! (obj-ref st 1)
-            (fn (_ fd) (Tls13 accept fd fd (list (pair (lit pem) (%opt (lit pem) (obj-ref st 2)))))))
+          (Wire tls-accept (obj-ref st 1) (%opt (lit pem) (obj-ref st 2)))
           (obj-set! st 3 ())
           (%reset! st))
       (%say st 502 "5.5.1 STARTTLS not offered"))))
@@ -402,47 +342,14 @@
 
 (def-class Smtp ()
   (doc "SMTP (RFC 5321) over a wire: a socket, TLS on a socket, or a script. The client says hello, may take STARTTLS and AUTH, and sends messages; the server runs one session, asking the caller's functions which recipients to take and what to do with each message."
-    (example "(Smtp script-output (Smtp serve (Smtp script-wire \"QUIT\\r\\n\") ()))" "\"220 localhost ESMTP\\r\\n221 2.0.0 Bye\\r\\n\"")
+    (example "(Wire output (Smtp serve (Wire script \"QUIT\\r\\n\") ()))" "\"220 localhost ESMTP\\r\\n221 2.0.0 Bye\\r\\n\"")
     (see connect send serve))
   (static
-    ; --- wires
-    (method socket-wire (self (param fd INTEGER "A connected socket"))
-      (doc "A wire over a connected socket. close closes the socket."
-        (returns VECTOR "A wire")
-        (sample "(Smtp socket-wire (Socket accept listen-fd))" "a wire"))
-      (%wire (fn (_ n) (Socket recv-run fd n)) (fn (_ s) (Socket send fd s)) (fn (_) (Socket close fd)) fd))
-
-    (method tls-accept (self (param w VECTOR "A socket wire to a client")
-                             (param pem STRING "PEM text: the private key, RSA or Ed25519, and the certificates, leaf first"))
-      (doc "The wire under TLS from the start, as the server: for port 465, where the session is TLS before the greeting. A failed handshake raises a label 'io."
-        (returns VECTOR "The wire")
-        (sample "(Smtp serve (Smtp tls-accept (Smtp socket-wire fd) pem) opts)" "a session under TLS"))
-      (%upgrade! w (fn (_ fd) (Tls13 accept fd fd (list (pair (lit pem) pem))))))
-
-    (method script-wire (self (param text STRING "What the other side sends, all of it"))
-      (doc "A wire that reads text and then its end, and keeps what is written to it for script-output: either side of a session run with no network."
-        (returns VECTOR "A wire")
-        (example "(Smtp script-output (Smtp script-wire \"\"))" "\"\""))
-      (def w (%wire () () (fn (_) ()) ()))
-      (def left (Vector make 1 0))
-      (obj-set! left 1 text)
-      (obj-set! w 1 (fn (_ n) (if (null? (obj-ref left 1)) ()
-                                (let ((t (obj-ref left 1))) (do (obj-set! left 1 ()) (pair t (str-byte-len t)))))))
-      (obj-set! w 2 (fn (_ s) (obj-set! w 7 (pair s (obj-ref w 7)))))
-      w)
-
-    (method script-output (self (param w VECTOR "A script wire, or a client session on one"))
-      (doc "Everything written to a script wire so far, in order."
-        (returns STRING "The text written")
-        (example "(Smtp script-output (Smtp script-wire \"\"))" "\"\""))
-      (def wire (if (int= (Vector length w) 3) (obj-ref w 1) w))
-      (Str8 join "" (List reverse (obj-ref wire 7))))
-
     ; --- the client
     (method client (self (param w VECTOR "A wire to a server"))
       (doc "A client session on the wire, once the server's 220 greeting is read; any other greeting raises a label 'io."
         (returns VECTOR "A session")
-        (example "(null? (Smtp extensions (Smtp client (Smtp script-wire \"220 mx ESMTP\\r\\n\"))))" "#t"))
+        (example "(null? (Smtp extensions (Smtp client (Wire script \"220 mx ESMTP\\r\\n\"))))" "#t"))
       (%expect (%reply w) 200 "the greeting")
       (%session w))
 
@@ -453,20 +360,26 @@
         (returns VECTOR "A session")
         (sample "(Smtp connect \"127.0.0.1\" 25)" "a session"))
       (def quad (Socket resolve host))
-      (def w (self socket-wire (Socket tcp-connect quad port)))
-      (when (%flag? (lit tls) opts) (%upgrade! w (fn (_ fd) (Tls13 over fd fd (%tls-opts host opts)))))
+      (def w (Wire socket (Socket tcp-connect quad port)))
+      (when (%flag? (lit tls) opts) (Wire tls-connect w (%tls-opts host opts)))
       (self client w))
+
+    (method wire (self (param s VECTOR "A client session"))
+      (doc "The session's wire: for Wire output on a script, or Wire tls? and the like."
+        (returns VECTOR "A wire")
+        (example "(Wire output (Smtp wire (Smtp client (Wire script \"220 mx\\r\\n\"))))" "\"\""))
+      (obj-ref s 1))
 
     (method command (self (param s VECTOR "A client session") (param line STRING "A command line, without its line end"))
       (doc "Send one command and answer the server's reply as it came."
         (returns LIST "(CODE . TEXTS)")
-        (example "(Smtp command (Smtp client (Smtp script-wire \"220 mx\\r\\n250 OK\\r\\n\")) \"NOOP\")" "(250 \"OK\")"))
+        (example "(Smtp command (Smtp client (Wire script \"220 mx\\r\\n250 OK\\r\\n\")) \"NOOP\")" "(250 \"OK\")"))
       (%ask s line))
 
     (method hello (self (param s VECTOR "A client session") (param name STRING "This host's name"))
       (doc "EHLO, or HELO where the server refuses EHLO. Answers the extensions the server named, each (KEYWORD . PARAMS), KEYWORD in upper case; HELO names none."
         (returns LIST "(KEYWORD . PARAMS) pairs")
-        (example "(Smtp hello (Smtp client (Smtp script-wire \"220 mx\\r\\n250-mx hi\\r\\n250-SIZE 1000\\r\\n250 starttls\\r\\n\")) \"me\")" "((\"SIZE\" \"1000\") (\"STARTTLS\"))"))
+        (example "(Smtp hello (Smtp client (Wire script \"220 mx\\r\\n250-mx hi\\r\\n250-SIZE 1000\\r\\n250 starttls\\r\\n\")) \"me\")" "((\"SIZE\" \"1000\") (\"STARTTLS\"))"))
       (def r (%ask s (Str8 append "EHLO " name)))
       (def exts
         (if (int= (%class r) 200)
@@ -479,21 +392,21 @@
     (method extensions (self (param s VECTOR "A client session"))
       (doc "The extensions the server named at the last hello, each (KEYWORD . PARAMS)."
         (returns LIST "(KEYWORD . PARAMS) pairs")
-        (example "(null? (Smtp extensions (Smtp client (Smtp script-wire \"220 mx\\r\\n\"))))" "#t"))
+        (example "(null? (Smtp extensions (Smtp client (Wire script \"220 mx\\r\\n\"))))" "#t"))
       (obj-ref s 3))
 
     (method extension (self (param s VECTOR "A client session") (param keyword STRING "An extension, any case"))
       (doc "The parameters of an extension the server named, or nil where it named none of that name."
         (returns ANY "A LIST of STRINGs (empty for none), or nil")
-        (example "(null? (Smtp extension (Smtp client (Smtp script-wire \"220 mx\\r\\n\")) \"SIZE\"))" "#t"))
+        (example "(null? (Smtp extension (Smtp client (Wire script \"220 mx\\r\\n\")) \"SIZE\"))" "#t"))
       (let go ((l (obj-ref s 3)))
         (match ((null? l) ()) ((Str8 ci=? (first (first l)) keyword) (rest (first l))) (#t (go (rest l))))))
 
     (method tls? (self (param s VECTOR "A client session"))
       (doc "#t when the session is under TLS."
         (returns BOOL "#t under TLS")
-        (example "(Smtp tls? (Smtp client (Smtp script-wire \"220 mx\\r\\n\")))" "#f"))
-      (obj-ref (obj-ref s 1) 6))
+        (example "(Smtp tls? (Smtp client (Wire script \"220 mx\\r\\n\")))" "#f"))
+      (Wire tls? (obj-ref s 1)))
 
     (method starttls (self (param s VECTOR "A client session after hello")
                            . (param opts ALIST "(host . NAME), the name TLS checks; ('insecure) to skip that check"))
@@ -501,7 +414,7 @@
         (returns LIST "(KEYWORD . PARAMS) pairs")
         (sample "(Smtp starttls s (list 'insecure))" "the extensions named under TLS"))
       (%expect (%ask s "STARTTLS") 200 "STARTTLS")
-      (%upgrade! (obj-ref s 1) (fn (_ fd) (Tls13 over fd fd (%tls-opts () opts))))
+      (Wire tls-connect (obj-ref s 1) (%tls-opts () opts))
       (self hello s (obj-ref s 2)))
 
     (method auth (self (param s VECTOR "A client session after hello")
@@ -509,7 +422,7 @@
                        (param password STRING "The password"))
       (doc "AUTH (RFC 4954): PLAIN where the server names it, else LOGIN. A server that names neither, or refuses the credentials, raises a label 'io."
         (returns ANY "#t")
-        (example "(Smtp auth (Smtp client (Smtp script-wire \"220 mx\\r\\n235 ok\\r\\n\")) \"u\" \"p\")" "#t"))
+        (example "(Smtp auth (Smtp client (Wire script \"220 mx\\r\\n235 ok\\r\\n\")) \"u\" \"p\")" "#t"))
       (def mechs (List map (fn (_ m) (Str8 upcase m)) (let ((m (self extension s "AUTH"))) (if (null? m) () m))))
       (if (if (List includes? "PLAIN" mechs) #t (null? mechs))
         (%expect (%ask s (Str8 append "AUTH PLAIN " (%plain user password))) 200 "AUTH PLAIN")
@@ -526,7 +439,7 @@
                        (param message ANY "A mail/message message, or its text"))
       (doc "Send one message: MAIL, RCPT for each recipient, then DATA with the text, its lines ended with CRLF and a dot put before any line that starts with one. Answers the recipients the server refused, each (ADDRESS . REPLY); where it took none, the transaction is reset and a label 'io raised."
         (returns LIST "(ADDRESS . REPLY) pairs, empty when every recipient was taken")
-        (example "(Smtp send (Smtp client (Smtp script-wire \"220 mx\\r\\n250 ok\\r\\n250 ok\\r\\n550 no\\r\\n354 go\\r\\n250 ok\\r\\n\")) \"a@x\" (list \"b@y\" \"c@z\") \"Subject: hi\\n\\n.dot\\n\")" "((\"c@z\" 550 \"no\"))"))
+        (example "(Smtp send (Smtp client (Wire script \"220 mx\\r\\n250 ok\\r\\n250 ok\\r\\n550 no\\r\\n354 go\\r\\n250 ok\\r\\n\")) \"a@x\" (list \"b@y\" \"c@z\") \"Subject: hi\\n\\n.dot\\n\")" "((\"c@z\" 550 \"no\"))"))
       (%expect (%ask s (Str8 append "MAIL FROM:<" from ">")) 200 "MAIL")
       (def refused
         (List filter (fn (_ x) (not (null? x)))
@@ -535,16 +448,16 @@
       (when (int= (List length refused) (List length recipients))
         (do (%ask s "RSET") (%io "the server took no recipient" refused)))
       (%expect (%ask s "DATA") 300 "DATA")
-      (%write (obj-ref s 1) (%data-text (if (str? message) message (Message write message))))
+      (Wire write (obj-ref s 1) (%data-text (if (str? message) message (Message write message))))
       (%expect (%reply (obj-ref s 1)) 200 "the message")
       refused)
 
     (method quit (self (param s VECTOR "A client session"))
       (doc "QUIT, then the wire closed."
         (returns ANY "nil")
-        (example "(null? (Smtp quit (Smtp client (Smtp script-wire \"220 mx\\r\\n221 bye\\r\\n\"))))" "#t"))
+        (example "(null? (Smtp quit (Smtp client (Wire script \"220 mx\\r\\n221 bye\\r\\n\"))))" "#t"))
       (guard (_ ()) (%ask s "QUIT"))
-      ((obj-ref (obj-ref s 1) 3))
+      (Wire close (obj-ref s 1))
       ())
 
     ; --- the server
@@ -552,12 +465,12 @@
                         (param opts ALIST "(name . HOST); (deliver . FN); (rcpt . FN); (auth . FN); (pem . TEXT); (size . N); ('auth-in-clear); ('require-auth)"))
       (doc "One server session on the wire: the greeting, then commands to QUIT or the wire's end. (name . HOST) names this server (localhost). (deliver . (fn (_ from recipients text info))) takes each message, its text with CRLF line ends and dots taken off, INFO an alist of hello, tls and user; a raise from it answers 451. (rcpt . (fn (_ address user))) says whether to take a recipient (all, without it). (auth . (fn (_ user password))) turns on AUTH PLAIN and LOGIN, offered under TLS only unless ('auth-in-clear). (pem . TEXT), a key and its certificates, turns on STARTTLS. (size . N) limits a message (10 MB). ('require-auth) refuses MAIL before AUTH. Answers the wire, not closed."
         (returns VECTOR "The wire")
-        (example "(Smtp script-output (Smtp serve (Smtp script-wire \"HELO me\\r\\nQUIT\\r\\n\") (list (pair 'name \"mx\"))))" "\"220 mx ESMTP\\r\\n250 mx\\r\\n221 2.0.0 Bye\\r\\n\""))
+        (example "(Wire output (Smtp serve (Wire script \"HELO me\\r\\nQUIT\\r\\n\") (list (pair 'name \"mx\"))))" "\"220 mx ESMTP\\r\\n250 mx\\r\\n221 2.0.0 Bye\\r\\n\""))
       (def st (%state w opts))
       (%say st 220 (Str8 append (let ((n (%opt (lit name) opts))) (if (null? n) "localhost" n)) " ESMTP"))
       (let go ()
         (unless (obj-ref st 7)
-          (let ((line (guard (_ ()) (%read-line w))))
+          (let ((line (guard (_ ()) (Wire read-line w))))
             (unless (null? line)
               (do (%serve-line st line) (go))))))
       w)))
@@ -571,4 +484,4 @@
 
 (doc (provide mail/smtp Smtp)
   "SMTP (RFC 5321) client and server, with STARTTLS (RFC 3207) and AUTH PLAIN and LOGIN (RFC 4954), over a socket, TLS, or a script for tests."
-  (example "(Smtp script-output (Smtp serve (Smtp script-wire \"QUIT\\r\\n\") ()))" "\"220 localhost ESMTP\\r\\n221 2.0.0 Bye\\r\\n\""))
+  (example "(Wire output (Smtp serve (Wire script \"QUIT\\r\\n\") ()))" "\"220 localhost ESMTP\\r\\n221 2.0.0 Bye\\r\\n\""))

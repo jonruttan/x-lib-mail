@@ -1,7 +1,8 @@
 # x-lib-mail
 
 Mail for [x-lang](https://github.com/jonruttan/x-lang), written in x: Internet
-messages, MIME, Maildir stores and SMTP so far, with POP3 and IMAP to follow.
+messages, MIME, Maildir stores, SMTP and an IMAP client so far, with POP3 to
+follow.
 
 x-lib-mail holds the bundle `mail`. It is a library: it has modules and no
 entry, so there is nothing to start with `x -l`. A program imports what it
@@ -20,6 +21,9 @@ uses.
 | `mail/mime` | `Mime` | MIME bodies (RFC 2045, 2046): Content-Type parameters, base64 and quoted-printable, multipart split and built |
 | `mail/maildir` | `Maildir` | a Maildir++ store: folders, messages and their flags, delivery and moves |
 | `mail/smtp` | `Smtp` | SMTP (RFC 5321) client and server, with STARTTLS (RFC 3207) and AUTH PLAIN and LOGIN (RFC 4954) |
+| `mail/imap` | `Imap` | an IMAP client (RFC 9051 IMAP4rev2, RFC 3501 IMAP4rev1) with the calls of `mail/maildir` |
+| `mail/wire` | `Wire` | the connection SMTP and IMAP talk over: a socket, TLS on a socket, or a script for tests |
+| `mail/utf7` | `Utf7` | IMAP's modified UTF-7 (RFC 3501 5.1.3), the form of a mailbox name |
 
 A message is `(FIELDS . BODY)`: `FIELDS` is a list of `(NAME . VALUE)` strings
 in order and `BODY` is the text after the blank line. A message is text: RFC
@@ -63,6 +67,24 @@ what to do with each message; accepting connections is the caller's.
 (Smtp auth s "ann" "secret")
 (Smtp send s "ann@example.org" (list "bo@example.net") message)
 (Smtp quit s)
+```
+
+An IMAP connection takes the Maildir calls with the connection in the root's
+place: `folders`, `messages`, `read`, `flag!`, `move!`, `create!`. A message is
+an entry `(KEY NEW? FLAGS INFO)`: `KEY` is `"UIDVALIDITY.UID"`, `NEW?` is
+`\Recent` (always `#f` under IMAP4rev2), `FLAGS` the same six symbols, and
+`INFO` the envelope `messages` fetched. Unread is a `FLAGS` without `seen`,
+never `NEW?`.
+
+```x
+(import mail/imap)
+(def c (Imap connect "imap.example.org" 993 (list (lit tls))))
+(Imap login c "ann" "secret")
+(def inbox (list "INBOX"))
+(def e (first (Imap messages c inbox)))
+(Message field (Message parse (Imap read c inbox e)) "Subject")
+(Imap flag! c inbox e (list (lit seen)))
+(Imap logout c)
 ```
 
 ## Using it

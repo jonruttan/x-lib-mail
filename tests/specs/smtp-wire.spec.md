@@ -42,7 +42,7 @@ function was given.
     (def got (Vector make 1 0))
     (def result
       (guard (e (list (Err label e) (e msg)))
-        (do (Smtp serve (wire (Smtp socket-wire fd))
+        (do (Smtp serve (wire (Wire socket fd))
               (List append opts
                 (list (pair 'deliver (fn (_ from to text info)
                                        (obj-set! got 1 (list from to text (rest (Assoc find 'tls info)) (rest (Assoc find 'user info)))))))))
@@ -93,7 +93,7 @@ function was given.
 ### TLS from the start, as on port 465
 
 ```x
-(%sw-one (fn (_ w) (Smtp tls-accept w %sw-pem)) ()
+(%sw-one (fn (_ w) (Wire tls-accept w %sw-pem)) ()
   (fn (_ port)
     (let ((s (Smtp connect "127.0.0.1" port (list 'tls) (list 'insecure))))
       (do (Smtp hello s "client.test")
