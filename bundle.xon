@@ -1,0 +1,8 @@
+; bundle.xon -- what this bundle is.
+
+(name "mail")
+
+; Helium: each module imports what it uses.
+(dialect he)
+
+(requires-release "v0.62.0")
