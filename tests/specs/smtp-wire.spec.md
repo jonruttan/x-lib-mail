@@ -1,5 +1,6 @@
 # Smtp: the client and the server over a socket
 # @weight 15
+# @timeout-scale 4
 
 The server runs in this process on a loopback port; the client runs in a
 child. Under TLS the key is an RSA one openssl makes for the run, since x's
