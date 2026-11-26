@@ -33,8 +33,9 @@ hold NULs, so `Mime decode-region` returns it as a region.
 A Maildir store is a root directory and its Maildir++ folders. A folder is a
 list of names: `("INBOX")` is the root, `("Lists" "x-lang")` is
 `ROOT/.Lists.x-lang`, each name written in IMAP's modified UTF-7. A message is
-an entry `(KEY NEW? FLAGS)`: its file's unique name, whether it is still in
-`new/`, and the flags its name carries.
+an entry `(KEY NEW? FLAGS INFO)`: its file's unique name, whether it is still
+in `new/`, the flags its name carries, and its header fields, time and size
+under the keys an IMAP entry's `INFO` has.
 
 ```x
 (import mail/maildir)

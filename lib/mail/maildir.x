@@ -5,16 +5,20 @@
 ; name is written on disk in IMAP's modified UTF-7 (RFC 3501 5.1.3), with "."
 ; and "/" encoded too, so no name can split into two or leave the root.
 ;
-; A message is an entry (KEY NEW? FLAGS): KEY the file's unique name, NEW? true
-; while it sits in new/, FLAGS the symbols draft flagged passed replied seen
-; trashed that its name carries, in that order.  The entry gives the file's
-; path; when another program has renamed the file since, it is found again by
-; its KEY.  Flag letters this module has no symbol for (a server's keywords) are
+; A message is an entry (KEY NEW? FLAGS INFO): KEY the file's unique name,
+; NEW? true while it sits in new/, FLAGS the symbols draft flagged passed
+; replied seen trashed that its name carries, in that order, INFO its header
+; fields, time and size with mail/imap's keys (messages reads them; flag! and
+; move! keep them).  The entry gives the file's path; when another program has
+; renamed the file since, it is found again by its KEY.  Flag letters this module has no symbol for (a server's keywords) are
 ; kept on the file whenever it is renamed.
 (module mail/maildir)
 
-(import x/core/doors char->int int+ int- int< int= str-byte-len str-byte-ref str-byte-sub)
+(import x/core/doors char->int int+ int- int< int= str-byte-len str-byte-ref str-byte-sub str-make)
 (import mail/utf7)
+(import mail/message)
+(import x/sys/date)
+(import x/type/assoc)
 (import x/sys/file)
 (import x/sys/posix)
 
@@ -79,6 +83,65 @@
     (List map first (List filter (fn (_ f) (%int-in? (rest f) letters)) %flag-letters))))
 
 (def %entry (fn (_ name new?) (list (%key name) new? (%flags-of (%letters name)))))
+
+; The header of the file at path: its bytes up to the blank line, read a
+; block at a time, none past 256 KB.
+(def %head-max 262144)
+
+(def %head
+  (fn (_ path)
+    (def fd (File open path (lit rdonly)))
+    (when (int< fd 0) (error (Err from-errno fd (lit open) path)))
+    (def buf (str-make 8192))
+    (def ends
+      (fn (_ s)
+        (def a (Str8 index-of "\n\n" s))
+        (def b (Str8 index-of "\n\r\n" s))
+        (match ((null? a) b) ((null? b) a) ((int< a b) a) (#t b))))
+    (def text
+      (let go ((acc ""))
+        (def at (ends acc))
+        (match
+          ((not (null? at)) (str-byte-sub acc 0 (int+ at 1)))
+          ((int< %head-max (str-byte-len acc)) acc)
+          (#t (let ((k (File read fd buf 8192)))
+                (if (int< 0 k) (go (Str8 append acc (str-byte-sub buf 0 k))) acc))))))
+    (File close fd)
+    text))
+
+(def %months (list "Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"))
+
+(def %month (fn (_ m) (let go ((l %months) (i 1)) (if (int= i m) (first l) (go (rest l) (int+ i 1))))))
+
+(def %two (fn (_ n) (if (int< n 10) (Str8 str "0" n) (Str8 str n))))
+
+; Unix seconds as IMAP writes a date-time: "23-Nov-2026 10:00:00 +0000".
+(def %imap-date
+  (fn (_ secs)
+    (def d (Date from-unix secs))
+    (def at (fn (_ k) (Assoc get k d)))
+    (Str8 str (%two (at (lit day))) "-" (%month (at (lit month))) "-" (at (lit year)) " "
+              (%two (at (lit hour))) ":" (%two (at (lit minute))) ":" (%two (at (lit second))) " +0000")))
+
+; The entry with INFO: its header's fields, the file's time and size, as
+; Imap messages answers them.
+(def %with-info
+  (fn (_ entry path)
+    (def st (File stat path))
+    (def head (%head path))
+    ; a header line with no colon: the fields are nil, the listing goes on
+    (def m (guard (e (if (eq? (Err label e) (lit value)) (pair () "") (error e))) (Message parse head)))
+    (def f (fn (_ name) (Message field m name)))
+    (List append entry
+      (list (list (pair (lit date) (f "Date"))
+                  (pair (lit from) (f "From"))
+                  (pair (lit to) (f "To"))
+                  (pair (lit cc) (f "Cc"))
+                  (pair (lit subject) (f "Subject"))
+                  (pair (lit message-id) (f "Message-ID"))
+                  (pair (lit in-reply-to) (f "In-Reply-To"))
+                  (pair (lit internal-date) (%imap-date (Assoc get (lit mtime) st)))
+                  (pair (lit size) (Assoc get (lit size) st)))))))
 
 ; The letters for FLAGS and the unknown letters kept from a file's name,
 ; in ASCII order, each once.
@@ -161,7 +224,7 @@
         (#t (do (%write-fd fd path text) name))))))
 
 (def-class Maildir ()
-  (doc "A Maildir++ mail store: folders named by lists of names, each message one file, its flags in its name. A message is an entry (KEY NEW? FLAGS)."
+  (doc "A Maildir++ mail store: folders named by lists of names, each message one file, its flags in its name. A message is an entry (KEY NEW? FLAGS INFO)."
     (example "(Maildir flags (list \"k\" #f (list (lit seen) (lit replied))))" "('replied 'seen)")
     (see folders messages read flag! deliver move! create!))
   (static
@@ -179,14 +242,14 @@
       (if (%maildir? root) (pair (list "INBOX") rest-folders) rest-folders))
 
     (method messages (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder"))
-      (doc "The folder's messages as entries (KEY NEW? FLAGS), those in new/ and those in cur/, in KEY order: a key begins with its delivery time. Files whose names begin with a dot are left out."
+      (doc "The folder's messages as entries (KEY NEW? FLAGS INFO), those in new/ and those in cur/, in KEY order: a key begins with its delivery time. Files whose names begin with a dot are left out. INFO has the keys Imap messages gives: (date . TEXT) (from . TEXT) (to . TEXT) (cc . TEXT) (subject . TEXT) (message-id . TEXT) (in-reply-to . TEXT), each the header field as it stands, nil where there is none, read from the header alone; (internal-date . TEXT), the file's mtime as IMAP writes a date-time in UTC; (size . N), the file's size."
         (returns LIST "Entries")
-        (sample "(Maildir messages \"/home/me/Maildir\" (list \"INBOX\"))" "((\"1732500000.M1P2.host\" #f (replied seen)) (\"1732500100.M5P2.host\" #t ()))"))
+        (sample "(Maildir messages \"/home/me/Maildir\" (list \"INBOX\"))" "((\"1732500000.M1P2.host\" #f (replied seen) ((date . \"Mon, 25 Nov 2024 02:00:00 +0000\") (from . \"ann@example.org\") ...)) ...)"))
       (def dir (%folder-dir root folder))
       (List sort (fn (_ a b) (Str8 <? (first a) (first b)))
         (List append
-          (List map (fn (_ name) (%entry name #t)) (%visible (Str8 append dir "/new")))
-          (List map (fn (_ name) (%entry name #f)) (%visible (Str8 append dir "/cur"))))))
+          (List map (fn (_ name) (%with-info (%entry name #t) (Str8 append dir "/new/" name))) (%visible (Str8 append dir "/new")))
+          (List map (fn (_ name) (%with-info (%entry name #f) (Str8 append dir "/cur/" name))) (%visible (Str8 append dir "/cur"))))))
 
     (method flags (self (param entry LIST "An entry"))
       (doc "The entry's flags, in the order draft flagged passed replied seen trashed."
@@ -205,7 +268,7 @@
 
     (method flag! (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder")
                         (param entry LIST "An entry") (param flags LIST "Flag symbols"))
-      (doc "Give the message exactly these flags, moving it from new/ to cur/: a rename. Letters for flags this module does not name stay on the file. A symbol that is not one of draft flagged passed replied seen trashed raises a label 'value Err."
+      (doc "Give the message exactly these flags, moving it from new/ to cur/: a rename. Letters for flags this module does not name stay on the file, and the entry's INFO stays on the entry. A symbol that is not one of draft flagged passed replied seen trashed raises a label 'value Err."
         (returns LIST "The message's entry now")
         (sample "(Maildir flag! root (list \"INBOX\") entry (list (lit seen)))" "(\"1732500100.M5P2.host\" #f (seen))"))
       (def dir (%folder-dir root folder))
@@ -214,7 +277,7 @@
       (def from (Str8 append dir "/" (first at) "/" (rest at)))
       (def to (Str8 append dir "/cur/" name))
       (match ((str=? from to) ()) (#t (File rename from to)))
-      (%entry name #f))
+      (List append (%entry name #f) (rest (rest (rest entry)))))
 
     (method deliver (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder")
                           (param text STRING "The message")
@@ -230,14 +293,14 @@
 
     (method move! (self (param root STRING "The Maildir's root directory") (param from LIST "The folder it is in")
                         (param entry LIST "An entry") (param to LIST "The folder it goes to"))
-      (doc "Move the message to another folder of the same store, its name and flags as they are: a rename."
+      (doc "Move the message to another folder of the same store, its name, flags and INFO as they are: a rename."
         (returns LIST "The message's entry in its new folder")
         (sample "(Maildir move! root (list \"INBOX\") entry (list \"Trash\"))" "(\"1732500000.M1P2.host\" #f (seen))"))
       (def dir (%folder-dir root from))
       (def at (%locate dir entry))
       (File rename (Str8 append dir "/" (first at) "/" (rest at))
                    (Str8 append (%folder-dir root to) "/" (first at) "/" (rest at)))
-      (%entry (rest at) (str=? (first at) "new")))
+      (List append (%entry (rest at) (str=? (first at) "new")) (rest (rest (rest entry)))))
 
     (method create! (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder"))
       (doc "Make the folder if it is not there: its directory with cur/, new/ and tmp/, mode 0700, and for a dot folder the maildirfolder file Maildir++ marks one with. What is there already is left as it is."
