@@ -287,3 +287,74 @@ r
 ```
 ---
     (#t #t 4)
+
+## entries, delete!, uids!
+
+### entries lists without INFO; delete! removes a file found by its key
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(File write-all (Str8 append root "/new/2.b.h") "A: 1\n\n")
+(File write-all (Str8 append root "/cur/1.a.h:2,ST") "A: 1\n\n")
+(def es (Maildir entries root (list "INBOX")))
+(Maildir delete! root (list "INBOX") (first es))
+(def r (list es (%spec-tree root) (guard (x (Err label x)) (Maildir delete! root (list "INBOX") (first es)))))
+(%spec-rm root)
+r
+```
+---
+    ((("1.a.h" #f ('seen 'trashed)) ("2.b.h" #t ())) ("cur/" "new/" "new/2.b.h" "tmp/") 'value)
+
+### uids! gives UIDs in KEY order, keeps them, drops gone ones and never reuses one
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(File write-all (Str8 append root "/cur/2.b.h:2,") "A: 1\n\n")
+(File write-all (Str8 append root "/new/1.a.h") "A: 1\n\n")
+(def one (Maildir uids! root (list "INBOX")))
+(File unlink (Str8 append root "/new/1.a.h"))
+(File write-all (Str8 append root "/new/0.z.h") "A: 1\n\n")
+(def two (Maildir uids! root (list "INBOX")))
+(def three (Maildir uids! root (list "INBOX")))
+(def r (list (rest one) (rest two) (equal? two three) (str=? (first one) (first two))
+             (let ((ls (Str8 split "\n" (File read-all (Str8 append root "/x-lib-mail-uids"))))) (pair (Str8 replace (first one) "VALIDITY" (first ls)) (rest ls)))
+             (File list-dir (Str8 append root "/tmp"))))
+(%spec-rm root)
+r
+```
+---
+    ((3 ((1 . "1.a.h") (2 . "2.b.h"))) (4 ((2 . "2.b.h") (3 . "0.z.h"))) #t #t ("x-lib-mail-uids 1 VALIDITY 4" "2 2.b.h" "3 0.z.h" "") ())
+
+### a file in another format starts over under a new UIDVALIDITY
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(File write-all (Str8 append root "/new/1.a.h") "A: 1\n\n")
+(File write-all (Str8 append root "/x-lib-mail-uids") "something else\n7 1.a.h\n")
+(def u (Maildir uids! root (list "INBOX")))
+(%spec-rm root)
+(rest u)
+```
+---
+    (2 ((1 . "1.a.h")))
+
+### info reads one message's INFO, found by its key
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(File write-all (Str8 append root "/cur/1.a.h:2,S") "From: ann@example.org\nSubject: one\n\nfirst\n")
+(def i (Maildir info root (list "INBOX") (first (Maildir entries root (list "INBOX")))))
+(def r (list (rest (Assoc find 'subject i)) (rest (Assoc find 'from i)) (rest (Assoc find 'size i))))
+(%spec-rm root)
+r
+```
+---
+    ("one" "ann@example.org" 42)
