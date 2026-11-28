@@ -1,8 +1,8 @@
 # x-lib-mail
 
 Mail for [x-lang](https://github.com/jonruttan/x-lang), written in x: Internet
-messages, MIME, Maildir stores, SMTP and an IMAP client so far, with POP3 to
-follow.
+messages, MIME, Maildir stores, SMTP, and an IMAP client and server so far,
+with POP3 to follow.
 
 x-lib-mail holds the bundle `mail`. It is a library: it has modules and no
 entry, so there is nothing to start with `x -l`. A program imports what it
@@ -21,7 +21,7 @@ uses.
 | `mail/mime` | `Mime` | MIME bodies (RFC 2045, 2046): Content-Type parameters, base64 and quoted-printable, multipart split and built |
 | `mail/maildir` | `Maildir` | a Maildir++ store: folders, messages and their flags, delivery and moves |
 | `mail/smtp` | `Smtp` | SMTP (RFC 5321) client and server, with STARTTLS (RFC 3207) and AUTH PLAIN and LOGIN (RFC 4954) |
-| `mail/imap` | `Imap` | an IMAP client (RFC 9051 IMAP4rev2, RFC 3501 IMAP4rev1) with the calls of `mail/maildir` |
+| `mail/imap` | `Imap` | an IMAP client (RFC 9051 IMAP4rev2, RFC 3501 IMAP4rev1) with the calls of `mail/maildir`, and an IMAP4rev1 server over Maildir stores |
 | `mail/wire` | `Wire` | the connection SMTP and IMAP talk over: a socket, TLS on a socket, or a script for tests |
 | `mail/utf7` | `Utf7` | IMAP's modified UTF-7 (RFC 3501 5.1.3), the form of a mailbox name |
 
@@ -86,6 +86,23 @@ never `NEW?`.
 (Message field (Message parse (Imap read c inbox e)) "Subject")
 (Imap flag! c inbox e (list (lit seen)))
 (Imap logout c)
+```
+
+The IMAP server serves Maildir stores, IMAP4rev1 with LITERAL+, SASL-IR,
+UIDPLUS, MOVE, UNSELECT and NAMESPACE, one session a call, as the SMTP server
+does. Its functions say whether a password is right and where a user's
+Maildir root is. Each folder keeps its UIDs in a file `x-lib-mail-uids`, which
+`Maildir uids!` reads and writes. Of the flags it keeps the six, and
+`\Recent` is a message SELECT found in `new/` and moved to `cur/`.
+
+```x
+(import mail/imap)
+(import x/sys/socket)
+(def l (Socket tcp-listen 143))
+(Imap serve (Wire socket (Socket accept l))
+  (list (pair (lit auth) (fn (_ user password) (str=? password "secret")))
+        (pair (lit store) (fn (_ user) (Str8 append "/var/mail/" user)))
+        (pair (lit pem) (File read-all "/etc/mail/key-and-certs.pem"))))
 ```
 
 ## Using it

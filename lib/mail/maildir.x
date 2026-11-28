@@ -165,6 +165,61 @@
   (fn (_ dir)
     (List filter (fn (_ name) (not (int= (%byte name 0) 46))) (File list-dir dir))))
 
+; --- UIDs ---
+;
+; A folder's x-lib-mail-uids file keeps IMAP's UIDs for its messages: a line
+; "x-lib-mail-uids 1 UIDVALIDITY NEXT", then a line "UID KEY" a message, UIDs
+; ascending.  It is written whole into tmp/ and renamed over the old one.
+
+(def %uid-file "x-lib-mail-uids")
+
+; The lines of text, the text after the last LF a line of its own when not empty.
+(def %lines
+  (fn (_ text)
+    (let go ((s text) (acc ()))
+      (def at (Str8 index-of "\n" s))
+      (match
+        ((null? at) (List reverse (if (int= (str-byte-len s) 0) acc (pair s acc))))
+        (#t (go (str-byte-sub s (int+ at 1) (int- (str-byte-len s) (int+ at 1))) (pair (str-byte-sub s 0 at) acc)))))))
+
+; The file's (UIDVALIDITY NEXT PAIRS), PAIRS (UID . KEY); nil when it is not
+; there or not this format.
+(def %read-uids
+  (fn (_ path)
+    (if (not (eq? (File type path) (lit file)))
+      ()
+      (let ((lines (%lines (File read-all path))))
+        (def head (if (pair? lines) (Str8 split " " (first lines)) ()))
+        (def num (fn (_ s) (guard (_ ()) (%str->number s))))
+        (if (if (int= (List length head) 4) (if (str=? (first head) %uid-file) (str=? (%nth head 1) "1") #f) #f)
+          (let ((pairs (List map
+                         (fn (_ l)
+                           (def sp (Str8 index-of " " l))
+                           (if (null? sp) () (pair (num (str-byte-sub l 0 sp)) (str-byte-sub l (int+ sp 1) (int- (str-byte-len l) (int+ sp 1))))))
+                         (rest lines))))
+            (if (List any? (fn (_ p) (if (null? p) #t (null? (first p)))) pairs)
+              ()
+              (list (%nth head 2) (num (%nth head 3)) pairs)))
+          ())))))
+
+(def %nth (fn (_ l i) (if (int= i 0) (first l) (%nth (rest l) (int- i 1)))))
+
+(def %write-uids
+  (fn (_ dir validity next pairs)
+    (def text
+      (Str8 join ""
+        (pair (Str8 str %uid-file " 1 " validity " " next "\n")
+              (List map (fn (_ p) (Str8 str (first p) " " (rest p) "\n")) pairs))))
+    (def tmp (Str8 str dir "/tmp/" %uid-file "." (Sys getpid)))
+    (File write-all tmp text)
+    (File rename tmp (Str8 str dir "/" %uid-file))))
+
+; A folder directory's messages as (ENTRY . PATH), new/ and cur/, in KEY order.
+(def %listing
+  (fn (_ dir)
+    (def of (fn (_ sub new?) (List map (fn (_ name) (pair (%entry name new?) (Str8 str dir "/" sub "/" name))) (%visible (Str8 append dir (Str8 append "/" sub))))))
+    (List sort (fn (_ a b) (Str8 <? (first (first a)) (first (first b)))) (List append (of "new" #t) (of "cur" #f)))))
+
 ; Where an entry's file is now: (SUB . NAME), SUB "new" or "cur".
 (def %locate
   (fn (_ dir entry)
@@ -226,7 +281,7 @@
 (def-class Maildir ()
   (doc "A Maildir++ mail store: folders named by lists of names, each message one file, its flags in its name. A message is an entry (KEY NEW? FLAGS INFO)."
     (example "(Maildir flags (list \"k\" #f (list (lit seen) (lit replied))))" "('replied 'seen)")
-    (see folders messages read flag! deliver move! create!))
+    (see folders messages entries info read flag! deliver move! delete! create! uids!))
   (static
     (method folders (self (param root STRING "The Maildir's root directory"))
       (doc "Every folder in the store: (\"INBOX\") first when the root is a Maildir, then each dot folder with a cur/ directory, in the order of their directory names."
@@ -245,11 +300,56 @@
       (doc "The folder's messages as entries (KEY NEW? FLAGS INFO), those in new/ and those in cur/, in KEY order: a key begins with its delivery time. Files whose names begin with a dot are left out. INFO has the keys Imap messages gives: (date . TEXT) (from . TEXT) (to . TEXT) (cc . TEXT) (subject . TEXT) (message-id . TEXT) (in-reply-to . TEXT), each the header field as it stands, nil where there is none, read from the header alone; (internal-date . TEXT), the file's mtime as IMAP writes a date-time in UTC; (size . N), the file's size."
         (returns LIST "Entries")
         (sample "(Maildir messages \"/home/me/Maildir\" (list \"INBOX\"))" "((\"1732500000.M1P2.host\" #f (replied seen) ((date . \"Mon, 25 Nov 2024 02:00:00 +0000\") (from . \"ann@example.org\") ...)) ...)"))
+      (List map (fn (_ p) (%with-info (first p) (rest p))) (%listing (%folder-dir root folder))))
+
+    (method entries (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder"))
+      (doc "The folder's messages as entries (KEY NEW? FLAGS) with no INFO, in KEY order, from the directory listings alone: no file is opened."
+        (returns LIST "Entries")
+        (sample "(Maildir entries \"/home/me/Maildir\" (list \"INBOX\"))" "((\"1732500000.M1P2.host\" #f (replied seen)) (\"1732500100.M5P2.host\" #t ()))"))
+      (List map first (%listing (%folder-dir root folder))))
+
+    (method uids! (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder"))
+      (doc "IMAP's UIDs for the folder's messages, kept in its x-lib-mail-uids file: a message keeps the UID it was given, a new one gets the next in KEY order, and one no longer there is dropped; the file is rewritten when that changes anything. A folder with no file, or one in another format, starts over at UID 1 under a new UIDVALIDITY, the time. Answers (UIDVALIDITY NEXT PAIRS): UIDVALIDITY a digit string, NEXT the UID the next message gets, PAIRS (UID . KEY) in UID order. Two programs giving out UIDs in one folder at once can lose each other's; one server a store."
+        (returns LIST "(UIDVALIDITY NEXT PAIRS)")
+        (sample "(Maildir uids! \"/home/me/Maildir\" (list \"INBOX\"))" "(\"1764200000\" 3 ((1 . \"1732500000.M1P2.host\") (2 . \"1732500100.M5P2.host\")))"))
       (def dir (%folder-dir root folder))
-      (List sort (fn (_ a b) (Str8 <? (first a) (first b)))
-        (List append
-          (List map (fn (_ name) (%with-info (%entry name #t) (Str8 append dir "/new/" name))) (%visible (Str8 append dir "/new")))
-          (List map (fn (_ name) (%with-info (%entry name #f) (Str8 append dir "/cur/" name))) (%visible (Str8 append dir "/cur"))))))
+      (def keys (List map (fn (_ p) (first (first p))) (%listing dir)))
+      (def old (%read-uids (Str8 str dir "/" %uid-file)))
+      (def validity (if (null? old) (Str8 str (Sys now)) (first old)))
+      (def pairs (if (null? old) () (%nth old 2)))
+      (def merged
+        (let go ((ks keys) (ps (List sort (fn (_ a b) (Str8 <? (rest a) (rest b))) pairs)) (kept ()) (fresh ()))
+          (match
+            ((null? ks) (pair kept (List reverse fresh)))
+            ((null? ps) (go (rest ks) ps kept (pair (first ks) fresh)))
+            ((str=? (first ks) (rest (first ps))) (go (rest ks) (rest ps) (pair (first ps) kept) fresh))
+            ((Str8 <? (rest (first ps)) (first ks)) (go ks (rest ps) kept fresh))
+            (#t (go (rest ks) ps kept (pair (first ks) fresh))))))
+      (def fresh (rest merged))
+      (def given
+        (let go ((l fresh) (n (if (null? old) 1 (%nth old 1))) (acc ()))
+          (if (null? l) (pair n acc) (go (rest l) (int+ n 1) (pair (pair n (first l)) acc)))))
+      (def all (List sort (fn (_ a b) (int< (first a) (first b))) (List append (first merged) (rest given))))
+      (when (if (null? old) #t (if (pair? fresh) #t (not (int= (List length (first merged)) (List length pairs)))))
+        (%write-uids dir validity (first given) all))
+      (list validity (first given) all))
+
+    (method info (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder") (param entry LIST "An entry"))
+      (doc "The message's INFO, as messages gives it, for one message found by its KEY."
+        (returns ALIST "INFO")
+        (sample "(Maildir info root (list \"INBOX\") entry)" "((date . \"Mon, 25 Nov 2024 02:00:00 +0000\") (from . \"ann@example.org\") ... (size . 120))"))
+      (def dir (%folder-dir root folder))
+      (def at (%locate dir entry))
+      (List last (%with-info (list (first entry)) (Str8 str dir "/" (first at) "/" (rest at)))))
+
+    (method delete! (self (param root STRING "The Maildir's root directory") (param folder LIST "A folder") (param entry LIST "An entry"))
+      (doc "Remove the message's file, found by its KEY as read and flag! find it: an unlink, for IMAP's EXPUNGE. A key not in the folder raises a label 'value Err."
+        (returns LIST "The entry")
+        (sample "(Maildir delete! root (list \"INBOX\") entry)" "(\"1732500000.M1P2.host\" #f (seen trashed))"))
+      (def dir (%folder-dir root folder))
+      (def at (%locate dir entry))
+      (File unlink (Str8 append dir "/" (first at) "/" (rest at)))
+      entry)
 
     (method flags (self (param entry LIST "An entry"))
       (doc "The entry's flags, in the order draft flagged passed replied seen trashed."
