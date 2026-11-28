@@ -97,7 +97,7 @@ r
 (Maildir create! root (list "INBOX"))
 (def e (Maildir deliver root (list "INBOX") "From: a@b.org\r\n\r\nhello\r\n"))
 (def r (list (first (rest e)) (Maildir flags e)
-             (equal? (Maildir messages root (list "INBOX")) (list e))
+             (equal? (List map (fn (_ x) (List init x)) (Maildir messages root (list "INBOX"))) (list e))
              (Message parse (Maildir read root (list "INBOX") e))
              (Str8 index-of "/" (first e)) (Str8 index-of ":" (first e))))
 (%spec-rm root)
@@ -132,7 +132,7 @@ r
 (File write-all (Str8 append root "/new/300.b.h") "A: 1\n\n")
 (File write-all (Str8 append root "/cur/100.c.h:2,") "A: 1\n\n")
 (File write-all (Str8 append root "/cur/.hidden") "")
-(def r (Maildir messages root (list "INBOX")))
+(def r (List map (fn (_ x) (List init x)) (Maildir messages root (list "INBOX"))))
 (%spec-rm root)
 r
 ```
@@ -159,7 +159,7 @@ r
 (File write-all (Str8 append root "/new/1.x.h") "A: 1\n\n")
 (def e (first (Maildir messages root (list "INBOX"))))
 (def f (Maildir flag! root (list "INBOX") e (list (lit seen) (lit flagged) (lit seen))))
-(def r (list f (%spec-tree root)))
+(def r (list (List init f) (%spec-tree root)))
 (%spec-rm root)
 r
 ```
@@ -175,7 +175,7 @@ r
 (File write-all (Str8 append root "/cur/1.x.h:2,Sab") "A: 1\n\n")
 (def e (first (Maildir messages root (list "INBOX"))))
 (def f (Maildir flag! root (list "INBOX") e (list (lit replied))))
-(def r (list e f (File list-dir (Str8 append root "/cur"))))
+(def r (list (List init e) (List init f) (File list-dir (Str8 append root "/cur"))))
 (%spec-rm root)
 r
 ```
@@ -193,7 +193,7 @@ r
 (def e (first (Maildir messages root (list "INBOX"))))
 (File rename (Str8 append root "/new/1.x.h") (Str8 append root "/cur/1.x.h:2,T"))
 (def r (list (rest (Message parse (Maildir read root (list "INBOX") e)))
-             (Maildir flag! root (list "INBOX") e (list (lit seen) (lit trashed)))))
+             (List init (Maildir flag! root (list "INBOX") e (list (lit seen) (lit trashed))))))
 (%spec-rm root)
 r
 ```
@@ -227,9 +227,63 @@ r
 (File write-all (Str8 append root "/cur/1.x.h:2,S") "A: 1\n\n")
 (def e (first (Maildir messages root (list "INBOX"))))
 (def m (Maildir move! root (list "INBOX") e (list "Trash")))
-(def r (list m (Maildir messages root (list "INBOX")) (Maildir messages root (list "Trash"))))
+(def bare (fn (_ l) (List map (fn (_ x) (List init x)) l)))
+(def r (list (List init m) (bare (Maildir messages root (list "INBOX"))) (bare (Maildir messages root (list "Trash")))))
 (%spec-rm root)
 r
 ```
 ---
     (("1.x.h" #f ('seen)) () (("1.x.h" #f ('seen))))
+
+## INFO
+
+### messages reads INFO from the header alone: fields as they stand, the file's time and size
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(def text "Date: Mon, 23 Nov 2026 10:00:00 +0000\r\nFrom: Ann B <ann@example.org>\r\nTo: me@example.org\r\nSubject: two\r\n words\r\nMessage-ID: <2@x>\r\nIn-Reply-To: <1@x>\r\n\r\nCc: not a field\r\n")
+(File write-all (Str8 append root "/cur/1.x.h:2,S") text)
+(def info (first (rest (rest (rest (first (Maildir messages root (list "INBOX"))))))))
+(def d (rest (Assoc find 'internal-date info)))
+(def r (list (List init (List init info)) (rest (Assoc find 'size info))
+             (Str8 length d) (Str8 ends? " +0000" d) (Str8 sub 2 1 d) (Str8 sub 6 1 d)))
+(%spec-rm root)
+r
+```
+---
+    ((('date . "Mon, 23 Nov 2026 10:00:00 +0000") ('from . "Ann B <ann@example.org>") ('to . "me@example.org") ('cc) ('subject . "two words") ('message-id . "<2@x>") ('in-reply-to . "<1@x>")) 170 26 #t "-" "-")
+
+### a header Message parse refuses gives nil fields, not a failed listing
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(File write-all (Str8 append root "/new/1.x.h") "not a header line\n\nbody\n")
+(def info (first (rest (rest (rest (first (Maildir messages root (list "INBOX"))))))))
+(def r (list (rest (Assoc find 'subject info)) (rest (Assoc find 'from info)) (rest (Assoc find 'size info))))
+(%spec-rm root)
+r
+```
+---
+    (() () 24)
+
+### flag! and move! keep the entry's INFO
+
+```x
+(import mail/maildir)
+(def root (%spec-root))
+(Maildir create! root (list "INBOX"))
+(Maildir create! root (list "Trash"))
+(File write-all (Str8 append root "/new/1.x.h") "Subject: hi\n\n")
+(def e (first (Maildir messages root (list "INBOX"))))
+(def f (Maildir flag! root (list "INBOX") e (list (lit seen))))
+(def m (Maildir move! root (list "INBOX") f (list "Trash")))
+(def r (list (equal? (List last f) (List last e)) (equal? (List last m) (List last e)) (List length m)))
+(%spec-rm root)
+r
+```
+---
+    (#t #t 4)
